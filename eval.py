@@ -1,33 +1,32 @@
-from data import COCODetection, get_label_map, MEANS, COLORS
-from yolact import Yolact
-from utils.augmentations import BaseTransform, FastBaseTransform, Resize
-from utils.functions import MovingAverage, ProgressBar
-from layers.box_utils import jaccard, center_size, mask_iou
-from utils import timer
-from utils.functions import SavePath
-from layers.output_utils import postprocess, undo_image_transformation
-import pycocotools
-
-from data import cfg, set_cfg, set_dataset
-
-import numpy as np
-import torch
-import torch.backends.cudnn as cudnn
-from torch.autograd import Variable
 import argparse
-import time
-import random
 import cProfile
-import pickle
 import json
 import os
-from collections import defaultdict
+import pickle
+import random
+import time
+from collections import OrderedDict, defaultdict
+from multiprocessing.pool import ThreadPool
 from pathlib import Path
-from collections import OrderedDict
-from PIL import Image
+from queue import Queue
 
-import matplotlib.pyplot as plt
 import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+import pycocotools
+import torch
+import torch.backends.cudnn as cudnn
+from PIL import Image
+from torch.autograd import Variable
+
+from data import (COLORS, MEANS, COCODetection, cfg, get_label_map, set_cfg,
+                  set_dataset)
+from layers.box_utils import center_size, jaccard, mask_iou
+from layers.output_utils import postprocess, undo_image_transformation
+from utils import timer
+from utils.augmentations import BaseTransform, FastBaseTransform, Resize
+from utils.functions import MovingAverage, ProgressBar, SavePath
+from yolact import Yolact
 
 
 def str2bool(v):
@@ -350,6 +349,9 @@ def prep_display(
             if on_gpu is not None:
                 color = torch.Tensor(color).to(on_gpu).float() / 255.0
                 color_cache[on_gpu][color_idx] = color
+            else:
+                color = np.array(color)
+
             return color
 
     # First, draw the masks on the GPU where we can do it really fast
@@ -360,13 +362,18 @@ def prep_display(
         masks = masks[:num_dets_to_consider, :, :, None]
 
         # Prepare the RGB images for each mask given their color (size [num_dets, h, w, 1])
-        colors = torch.cat(
-            [
-                get_color(j, on_gpu=img_gpu.device.index).view(1, 1, 1, 3)
-                for j in range(num_dets_to_consider)
-            ],
-            dim=0,
-        )
+
+        if args.cuda:
+            colors = torch.cat(
+                [
+                    # get_color(j, on_gpu=img_gpu.device.index).view(1, 1, 1, 3)
+                    get_color(j).view(1, 1, 1, 3)
+                    for j in range(num_dets_to_consider)
+                ],
+                dim=0,
+            )
+        else:
+            colors = np.stack([get_color(j) for j in range(num_dets_to_consider)])
         masks_color = masks.repeat(1, 1, 1, 3) * colors * mask_alpha
 
         # This is 1 everywhere except for 1-mask_alpha where the mask is
@@ -421,7 +428,7 @@ def prep_display(
     if args.display_text or args.display_bboxes:
         for j in reversed(range(num_dets_to_consider)):
             x1, y1, x2, y2 = boxes[j, :]
-            color = get_color(j)
+            color = get_color(j).tolist()
             score = scores[j]
 
             if args.display_bboxes:
@@ -840,7 +847,10 @@ def badhash(x):
 
 
 def evalimage(net: Yolact, path: str, save_path: str = None):
-    frame = torch.from_numpy(cv2.imread(path)).cuda().float()
+    if args.cuda:
+        frame = torch.from_numpy(cv2.imread(path)).cuda().float()
+    else:
+        frame = torch.from_numpy(cv2.imread(path)).float()
     batch = FastBaseTransform()(frame.unsqueeze(0))
     preds = net(batch)
 
@@ -871,10 +881,6 @@ def evalimages(net: Yolact, input_folder: str, output_folder: str):
         evalimage(net, path, out_path)
         print(path + " -> " + out_path)
     print("Done.")
-
-
-from multiprocessing.pool import ThreadPool
-from queue import Queue
 
 
 class CustomDataParallel(torch.nn.DataParallel):

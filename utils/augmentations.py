@@ -1,12 +1,14 @@
-import torch
-from torchvision import transforms
-import cv2
-import numpy as np
 import types
-from numpy import random
 from math import sqrt
 
-from data import cfg, MEANS, STD
+import cv2
+import numpy as np
+import torch
+import torch.nn.functional as F
+from numpy import random
+from torchvision import transforms
+
+from data import MEANS, STD, cfg
 
 
 def intersect(box_a, box_b):
@@ -627,7 +629,6 @@ class BaseTransform(object):
         return self.augment(img, masks, boxes, labels)
 
 
-import torch.nn.functional as F
 
 
 class FastBaseTransform(torch.nn.Module):
@@ -640,8 +641,8 @@ class FastBaseTransform(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.mean = torch.Tensor(MEANS).float().cuda()[None, :, None, None]
-        self.std = torch.Tensor(STD).float().cuda()[None, :, None, None]
+        self.mean = torch.Tensor(MEANS).float()[None, :, None, None]
+        self.std = torch.Tensor(STD).float()[None, :, None, None]
         self.transform = cfg.backbone.transform
 
     def forward(self, img):

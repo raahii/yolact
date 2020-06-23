@@ -1,25 +1,27 @@
-import torch, torchvision
-import torch.nn as nn
-import torch.nn.functional as F
-from torchvision.models.resnet import Bottleneck
-import numpy as np
+from collections import defaultdict
 from itertools import product
 from math import sqrt
 from typing import List
-from collections import defaultdict
 
+import numpy as np
+import torch
+import torch.backends.cudnn as cudnn
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision
+from torchvision.models.resnet import Bottleneck
+
+from backbone import construct_backbone
 from data.config import cfg, mask_type
 from layers import Detect
 from layers.interpolate import InterpolateModule
-from backbone import construct_backbone
-
-import torch.backends.cudnn as cudnn
 from utils import timer
 from utils.functions import MovingAverage, make_net
 
-# This is required for Pytorch 1.0.1 on Windows to initialize Cuda on some driver versions.
-# See the bug report here: https://github.com/pytorch/pytorch/issues/17108
-torch.cuda.current_device()
+#
+# # This is required for Pytorch 1.0.1 on Windows to initialize Cuda on some driver versions.
+# # See the bug report here: https://github.com/pytorch/pytorch/issues/17108
+# torch.cuda.current_device()
 
 # As of March 10, 2019, Pytorch DataParallel still doesn't support JIT Script Modules
 use_jit = torch.cuda.device_count() <= 1
@@ -40,9 +42,6 @@ class Concat(nn.Module):
     def forward(self, x):
         # Concat each along the channel dimension
         return torch.cat([net(x) for net in self.nets], dim=1, **self.extra_params)
-
-
-prior_cache = defaultdict(lambda: None)
 
 
 class PredictionModule(nn.Module):
@@ -304,7 +303,8 @@ class PredictionModule(nn.Module):
 
     def make_priors(self, conv_h, conv_w, device):
         """ Note that priors are [x,y,width,height] where (x,y) is the center of the box. """
-        global prior_cache
+        prior_cache = defaultdict(lambda: None)
+        # global prior_cache
         size = (conv_h, conv_w)
 
         with timer.env("makepriors"):
@@ -614,7 +614,10 @@ class Yolact(nn.Module):
 
     def load_weights(self, path):
         """ Loads weights from a compressed save file. """
-        state_dict = torch.load(path)
+        if use_jit:
+            state_dict = torch.load(path, map_location=torch.device("cpu"))
+        else:
+            state_dict = torch.load(path)
 
         # For backward compatability, remove these (the new variable is called layers)
         for key in list(state_dict.keys()):
